@@ -1,3 +1,21 @@
+# WWF No Mercy: Recompiled — 60Hz Edition (unofficial fork)
+
+> This is an **unofficial fork** of [jessetbh's WWF No Mercy: Recompiled](https://github.com/jessetbh/WWFNoMercyRecomp).
+> The recompilation itself is jessetbh's work, built on [N64Recomp](https://github.com/N64Recomp/N64Recomp),
+> [N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and [RT64](https://github.com/rt64/rt64).
+> This fork adds:
+>
+> - **60Hz in matches**: frame interpolation in RT64, fed by two small hooks in the recompiled game code
+>   (`tools/readd_hand_edits.py`).
+> - **Linux / Steam Deck build**: `tools/linux/build_linux.sh`. On the Deck, add `play.sh` to Steam as a
+>   non-Steam game in Desktop Mode, then play it only in Gaming Mode (full steps in `README_STEAM_DECK.txt`).
+>
+> Modified by Gadge64, 2026. Licensed under GPL-3.0 like the original (see `COPYING`). Developed with AI assistance.
+>
+> **Please report problems with this edition here, not to the original project.**
+
+---
+
 # WWF No Mercy: Recompiled
 
 WWF No Mercy: Recompiled is a project that uses
