@@ -5,14 +5,50 @@
 > [N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and [RT64](https://github.com/rt64/rt64).
 > This fork adds:
 >
-> - **60Hz in matches**: frame interpolation in RT64, fed by two small hooks in the recompiled game code
->   (`tools/readd_hand_edits.py`).
-> - **Linux / Steam Deck build**: `tools/linux/build_linux.sh`. On the Deck, add `play.sh` to Steam as a
->   non-Steam game in Desktop Mode, then play it only in Gaming Mode (full steps in `README_STEAM_DECK.txt`).
+> - **Smooth framerates**: 60, 90 or 120 fps through frame interpolation in RT64, fed by small hooks in the
+>   recompiled game code (`tools/readd_hand_edits.py`). Pick it under **Settings > Graphics > Framerate**.
+> - **Resolution option**: **Settings > Graphics > Resolution** sets the screen resolution (in fullscreen the
+>   display switches to it, and back afterwards).
+> - **Mods and texture packs**: per-mod texture packs and saves, picked in the launcher. See
+>   [Mods and texture packs](#mods-and-texture-packs).
+> - **Linux / Steam Deck build scripts**: `tools/linux/build_linux.sh` (see `README_STEAM_DECK.txt`). Release 0.2.0
+>   ships for Windows; the Steam Deck package is in release 0.1.1-60hz.1.
 >
 > Modified by Gadge64, 2026. Licensed under GPL-3.0 like the original (see `COPYING`). Developed with AI assistance.
 >
 > **Please report problems with this edition here, not to the original project.**
+
+## Mods and texture packs
+
+Each mod is a folder inside `modpacks`, next to the executable (or in `%LOCALAPPDATA%\NoMercyRecompiled\` when not
+running portable). The launcher's **Mod** option lists every mod folder plus **Base Game**, and remembers your choice.
+
+```
+modpacks\
+    <Mod Name>\
+        textures\   PNG texture replacements, any subfolders
+        save\       optional starting save: a Project64 .fla, or a .bin from this game
+```
+
+**Adding textures** needs no tools or code:
+
+1. Dump the texture you want to replace with Project64 (GLideN64 or Rice Video texture dumping). The dump's file name,
+   for example `WWF No Mercy#2220AF21#2#0#14BCB5C9_ciByRGBA.png`, identifies the texture.
+2. Edit or redraw it at any size (hi-res is fine), keeping the same file name.
+3. Put it in `modpacks\<Mod Name>\textures\` and restart the game.
+
+The part of the name between the first `#` and the last `_` is what matters. Jabo Direct3D8 packs (32-character
+hash names) work too. If the same name appears in two folders, the one whose path sorts last alphabetically wins.
+
+**Saves:** each mod gets its own save in `saves\<Mod Name>\`, created from the mod's `save\` folder **the first time
+the mod is started**. If you start a mod before putting its save in `save\`, it creates a blank save and keeps using it,
+so custom wrestlers and their textures won't appear. To fix it, close the game, delete `saves\<Mod Name>\` and start
+the mod again. Base Game keeps its own save and is never changed by mods.
+
+Textures for created or edited wrestlers only show when those wrestlers are in the roster, which comes from the mod's
+save.
+
+Thanks to **3jabo** ([Reddit](https://www.reddit.com/user/3jabo/), [GitHub](https://github.com/3jabo), [YouTube](https://www.youtube.com/@3jabo)) for testing mod support and his excellent input.
 
 ---
 
@@ -73,13 +109,12 @@ AMD Bulldozer and newer).
 * In-game config menus with full input rebinding for keyboard and controller
 * Default mappings tailored to the AKI control scheme (d-pad movement, analog taunts)
 * Flash cartridge save emulation with automatic persistence, plus rumble
+* 30 (original), 60, 90 or 120 fps, and a screen resolution option (this fork)
+* Texture packs and per-mod saves (this fork)
 
 ## Planned Features
 
-* High framerate support (frame interpolation), pending the family's
-  matrix-group work
-* Linux support
-* Mod support
+* Code and ROM-hack mods
 
 ## FAQ
 
@@ -183,3 +218,4 @@ See [BUILDING.md](BUILDING.md).
   follows.
 * ethteck and the splat/spimdisasm contributors — the disassembly tooling that made a
   no-decomp recompilation possible.
+* **3jabo** ([Reddit](https://www.reddit.com/user/3jabo/), [GitHub](https://github.com/3jabo), [YouTube](https://www.youtube.com/@3jabo)) for testing this fork's mod support and his excellent input.

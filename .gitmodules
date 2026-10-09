@@ -1,12 +1,12 @@
 [submodule "lib/N64ModernRuntime"]
 	path = lib/N64ModernRuntime
 	url = https://github.com/Gadge64/N64ModernRuntime.git
-	branch = wcw
+	branch = nomercy
 [submodule "lib/RecompFrontend"]
 	path = lib/RecompFrontend
 	url = https://github.com/Gadge64/RecompFrontend.git
-	branch = wcw
+	branch = nomercy
 [submodule "lib/rt64"]
 	path = lib/rt64
 	url = https://github.com/Gadge64/rt64.git
-	branch = wcw
+	branch = nomercy

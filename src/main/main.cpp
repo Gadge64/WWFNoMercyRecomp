@@ -11,6 +11,10 @@
 #include <thread>
 #include <set>
 #include <chrono>
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 #define SDL_MAIN_HANDLED
 #include "SDL.h"
@@ -175,7 +179,7 @@ static void wcw_sample_all_threads() {
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
-static const recomp::Version version { 0, 1, 1, "" };
+static const recomp::Version version { 0, 2, 0, "" };
 
 template <typename... Ts>
 [[noreturn]] static void exit_error(const char* str, Ts... args) {
@@ -527,6 +531,125 @@ static void wcw_setup_logging(bool show_console) {
 }
 #endif
 
+// Mod profiles. Each folder in <app folder>/modpacks/<Name>/ is one mod:
+//   textures/  hi-res texture pack (Rice/GLideN64-named PNGs or an rt64 pack; a directory, or textures.rtz/.zip)
+//   save/      starting save, either a recomp .bin or a Project64 .fla
+// Selecting a mod in the launcher gives it its own save (saves/<Name>/, seeded from save/ on first use)
+// and loads its textures. "Base Game" uses the normal save and no profile textures.
+namespace modpacks {
+    static std::vector<std::u8string> names{ u8"" };  // index 0 = base game
+    static size_t selected = 0;
+
+    static std::filesystem::path root() { return recompui::file::get_app_folder_path() / "modpacks"; }
+    static std::filesystem::path selection_file() { return recompui::file::get_app_folder_path() / "modpack.txt"; }
+
+    static std::string display_name(size_t index) {
+        return (index == 0) ? std::string("Base Game") : std::string(reinterpret_cast<const char*>(names[index].c_str()));
+    }
+
+    std::string option_title() { return "Mod: " + display_name(selected); }
+    bool any() { return names.size() > 1; }
+
+    // Copies the mod's starting save into saves/<Name>/ the first time the mod is used.
+    static void seed_save(const std::filesystem::path& pack_dir, const std::filesystem::path& target) {
+        std::error_code ec;
+        if (std::filesystem::exists(target, ec) || !std::filesystem::is_directory(pack_dir / "save", ec)) {
+            return;
+        }
+
+        for (const auto& entry : std::filesystem::directory_iterator(pack_dir / "save", ec)) {
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+            if ((ext != ".bin") && (ext != ".fla")) {
+                continue;
+            }
+
+            std::ifstream in(entry.path(), std::ios::binary);
+            std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (ext == ".fla") {
+                // Project64 stores FlashRAM as 32-bit words byte-swapped; it may also be short of 128 KB.
+                bytes.resize((bytes.size() + 3) & ~size_t(3), char(0xFF));
+                for (size_t i = 0; i < bytes.size(); i += 4) {
+                    std::swap(bytes[i], bytes[i + 3]);
+                    std::swap(bytes[i + 1], bytes[i + 2]);
+                }
+            }
+
+            bytes.resize(0x20000, char(0xFF));
+            std::filesystem::create_directories(target.parent_path(), ec);
+            std::ofstream out(target, std::ios::binary);
+            out.write(bytes.data(), std::streamsize(bytes.size()));
+            fprintf(stderr, "[modpack] seeded %ls from %ls\n", target.c_str(), entry.path().c_str());
+            return;
+        }
+    }
+
+    static std::filesystem::path find_textures(const std::filesystem::path& pack_dir) {
+        std::error_code ec;
+        for (const char* name : { "textures", "textures.rtz", "textures.zip" }) {
+            if (std::filesystem::exists(pack_dir / name, ec)) {
+                return pack_dir / name;
+            }
+        }
+
+        return {};
+    }
+
+    // Makes the selected mod active: save location, starting save and texture pack.
+    void apply() {
+        {
+            std::ofstream out(selection_file(), std::ios::binary);
+            out.write(reinterpret_cast<const char*>(names[selected].data()), std::streamsize(names[selected].size()));
+        }
+
+        if (selected == 0) {
+            ultramodern::set_initial_save_subfolder(u8"");
+            recompui::renderer::set_profile_texture_pack({});
+            fprintf(stderr, "[modpack] base game\n");
+            return;
+        }
+
+        const std::filesystem::path pack_dir = root() / names[selected];
+        seed_save(pack_dir, recompui::file::get_app_folder_path() / "saves" / names[selected] / (std::u8string(u8"wwf.nomercy.us") + u8".bin"));
+        ultramodern::set_initial_save_subfolder(names[selected]);
+        const std::filesystem::path textures = find_textures(pack_dir);
+        recompui::renderer::set_profile_texture_pack(textures);
+        fprintf(stderr, "[modpack] %s (textures: %ls)\n", display_name(selected).c_str(), textures.empty() ? L"none" : textures.c_str());
+    }
+
+    void next() {
+        selected = (selected + 1) % names.size();
+        apply();
+    }
+
+    // Finds the installed mods and restores the last selection (WCW_MODPACK=<name> overrides it).
+    void init() {
+        std::error_code ec;
+        std::filesystem::create_directories(root(), ec);
+        for (const auto& entry : std::filesystem::directory_iterator(root(), ec)) {
+            if (entry.is_directory(ec)) {
+                names.emplace_back(entry.path().filename().u8string());
+            }
+        }
+
+        std::sort(names.begin() + 1, names.end());
+
+        std::u8string wanted;
+        if (const char* env = getenv("WCW_MODPACK")) {
+            wanted = reinterpret_cast<const char8_t*>(env);
+        }
+        else {
+            std::ifstream in(selection_file(), std::ios::binary);
+            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            wanted = std::u8string(text.begin(), text.end());
+        }
+
+        auto it = std::find(names.begin(), names.end(), wanted);
+        selected = (it != names.end()) ? size_t(it - names.begin()) : 0;
+        apply();
+    }
+}
+
 int main(int argc, char** argv) {
     bool show_console = false;
     for (int i = 1; i < argc; i++) {
@@ -752,6 +875,8 @@ int main(int argc, char** argv) {
     recompui::config::create_sound_tab();
     recompui::config::finalize();
 
+    modpacks::init();
+
     // Must run after the controls config is loaded (it creates/looks up input profiles, which
     // recompinput only permits once defaults are settled) and before the game starts.
 
@@ -798,6 +923,13 @@ int main(int argc, char** argv) {
                 supported_games[0].thumbnail_bytes,
                 recompui::GameOptionsMenuLayout::Center);
             game_options_menu->add_start_game_or_load_rom_option();
+            if (modpacks::any()) {
+                recompui::GameOption* mod_option = game_options_menu->add_option(modpacks::option_title(), nullptr);
+                mod_option->set_callback([mod_option]() {
+                    modpacks::next();
+                    mod_option->set_title(modpacks::option_title());
+                });
+            }
             game_options_menu->add_setup_controls_option();
             game_options_menu->add_settings_option();
             game_options_menu->add_exit_option();
