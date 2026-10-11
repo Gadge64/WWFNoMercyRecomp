@@ -179,7 +179,7 @@ static void wcw_sample_all_threads() {
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
-static const recomp::Version version { 0, 2, 0, "" };
+static const recomp::Version version { 0, 2, 1, "" };
 
 template <typename... Ts>
 [[noreturn]] static void exit_error(const char* str, Ts... args) {
@@ -536,6 +536,12 @@ static void wcw_setup_logging(bool show_console) {
 //   save/      starting save, either a recomp .bin or a Project64 .fla
 // Selecting a mod in the launcher gives it its own save (saves/<Name>/, seeded from save/ on first use)
 // and loads its textures. "Base Game" uses the normal save and no profile textures.
+// Path as UTF-8 text for printf("%s"): path::c_str() is wchar_t on Windows but char on Linux.
+static std::string path_utf8(const std::filesystem::path& p) {
+    const std::u8string u = p.u8string();
+    return std::string(u.begin(), u.end());
+}
+
 namespace modpacks {
     static std::vector<std::u8string> names{ u8"" };  // index 0 = base game
     static size_t selected = 0;
@@ -579,7 +585,7 @@ namespace modpacks {
             std::filesystem::create_directories(target.parent_path(), ec);
             std::ofstream out(target, std::ios::binary);
             out.write(bytes.data(), std::streamsize(bytes.size()));
-            fprintf(stderr, "[modpack] seeded %ls from %ls\n", target.c_str(), entry.path().c_str());
+            fprintf(stderr, "[modpack] seeded %s from %s\n", path_utf8(target).c_str(), path_utf8(entry.path()).c_str());
             return;
         }
     }
@@ -614,7 +620,7 @@ namespace modpacks {
         ultramodern::set_initial_save_subfolder(names[selected]);
         const std::filesystem::path textures = find_textures(pack_dir);
         recompui::renderer::set_profile_texture_pack(textures);
-        fprintf(stderr, "[modpack] %s (textures: %ls)\n", display_name(selected).c_str(), textures.empty() ? L"none" : textures.c_str());
+        fprintf(stderr, "[modpack] %s (textures: %s)\n", display_name(selected).c_str(), textures.empty() ? "none" : path_utf8(textures).c_str());
     }
 
     void next() {
@@ -893,7 +899,7 @@ int main(int argc, char** argv) {
             ? std::filesystem::path(autoboot) : std::filesystem::path("nomercy.z64");
         auto rom_err = recomp::select_rom(autoboot_rom, game_id);
         if (rom_err != recomp::RomValidationError::Good) {
-            exit_error("WCW_AUTOBOOT ROM validation failed (err=%d) for %ls.\n", (int)rom_err, autoboot_rom.c_str());
+            exit_error("WCW_AUTOBOOT ROM validation failed (err=%d) for %s.\n", (int)rom_err, path_utf8(autoboot_rom).c_str());
         }
     }
     else {

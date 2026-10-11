@@ -11,8 +11,8 @@
 >   display switches to it, and back afterwards).
 > - **Mods and texture packs**: per-mod texture packs and saves, picked in the launcher. See
 >   [Mods and texture packs](#mods-and-texture-packs).
-> - **Linux / Steam Deck build scripts**: `tools/linux/build_linux.sh` (see `README_STEAM_DECK.txt`). Release 0.2.0
->   ships for Windows; the Steam Deck package is in release 0.1.1-60hz.1.
+> - **Linux / Steam Deck**: release 0.2.1 ships for Windows and Steam Deck / Linux, with every feature above
+>   (mods included). Build it yourself with `tools/linux/build_linux.sh` (see `README_STEAM_DECK.txt`).
 >
 > Modified by Gadge64, 2026. Licensed under GPL-3.0 like the original (see `COPYING`). Developed with AI assistance.
 >
