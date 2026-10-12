@@ -13,6 +13,7 @@
 #include <chrono>
 #include <ctime>
 #include <mutex>
+#include <atomic>
 #include <algorithm>
 #include <fstream>
 #include <iterator>
@@ -254,9 +255,29 @@ static void update_virtual_pads() {
     }
 }
 
+// Unlock Everything: the game's unlock bitfield (every wrestler, costume, move and Smackdown Mall item) is
+// 22 bytes at 0x800BD910 in USA Rev 1. Found by diffing RAM with a fully unlocked save against a fresh one
+// (the V1.0 GameShark code writes the same 22 bytes at 0x800BEE40) and verified in game. While the selected
+// profile has it switched on, the bytes are held at 0xFF every frame, like the cheat, so whenever the game
+// saves it writes them into the save itself, with its own checksums. WCW_UNLOCK_ALL=1 forces it on.
+namespace unlock_all {
+    static std::atomic<bool> active{ false };
+
+    static void hold() {
+        uint8_t* rdram = ::g_ww_rdram;
+        if (!active.load(std::memory_order_relaxed) || (rdram == nullptr)) {
+            return;
+        }
+        for (uint32_t addr = 0x0BD910; addr < 0x0BD910 + 22; addr++) {
+            rdram[addr ^ 3] = 0xFF;  // RDRAM is stored as little-endian 32-bit words
+        }
+    }
+}
+
 void update_gfx(void*) {
     update_virtual_pads();
     recompinput::handle_events();
+    unlock_all::hold();
 }
 
 ultramodern::input::connected_device_info_t get_connected_device_info(int controller_num) {
@@ -640,6 +661,34 @@ namespace modpacks {
         return dir / (std::u8string(u8"wwf.nomercy.us") + u8".bin");
     }
 
+    // Unlock Everything is remembered per profile by a marker file next to its save.
+    static std::filesystem::path unlock_marker_path() {
+        return selected_save_path().replace_filename("unlock-everything.txt");
+    }
+
+    static void refresh_unlock_all() {
+        std::error_code ec;
+        unlock_all::active = (getenv("WCW_UNLOCK_ALL") != nullptr) || std::filesystem::exists(unlock_marker_path(), ec);
+    }
+
+    std::string unlock_option_title() {
+        return std::string("Unlock Everything: ") + (unlock_all::active ? "On" : "Off");
+    }
+
+    void toggle_unlock_all() {
+        std::error_code ec;
+        const std::filesystem::path marker = unlock_marker_path();
+        if (std::filesystem::exists(marker, ec)) {
+            std::filesystem::remove(marker, ec);
+        }
+        else {
+            std::filesystem::create_directories(marker.parent_path(), ec);
+            std::ofstream(marker) << "Unlock Everything is on for this profile (delete this file to turn it off).\n";
+        }
+        refresh_unlock_all();
+        fprintf(stderr, "[unlock] %s: %s\n", display_name(selected).c_str(), unlock_all::active ? "on" : "off");
+    }
+
     // Copies the mod's starting save into saves/<Name>/ the first time the mod is used.
     static void seed_save(const std::filesystem::path& pack_dir, const std::filesystem::path& target) {
         std::error_code ec;
@@ -687,6 +736,7 @@ namespace modpacks {
             std::ofstream out(selection_file(), std::ios::binary);
             out.write(reinterpret_cast<const char*>(names[selected].data()), std::streamsize(names[selected].size()));
         }
+        refresh_unlock_all();
 
         if (selected == 0) {
             ultramodern::set_initial_save_subfolder(u8"");
@@ -1176,17 +1226,27 @@ int main(int argc, char** argv) {
                 supported_games[0].thumbnail_bytes,
                 recompui::GameOptionsMenuLayout::Center);
             game_options_menu->add_start_game_or_load_rom_option();
+            // Unlock Everything is per profile, so the Mod option refreshes its title too.
+            static recompui::GameOption* unlock_option = nullptr;
             if (modpacks::any()) {
                 recompui::GameOption* mod_option = game_options_menu->add_option(modpacks::option_title(), nullptr);
                 mod_option->set_callback([mod_option]() {
                     modpacks::next();
                     mod_option->set_title(modpacks::option_title());
+                    if (unlock_option != nullptr) {
+                        unlock_option->set_title(modpacks::unlock_option_title());
+                    }
                 });
             }
             recompui::GameOption* import_option = game_options_menu->add_option("Import Save", nullptr);
             import_option->set_callback([]() { import_save_flow(); });
             recompui::GameOption* export_option = game_options_menu->add_option("Export Save", nullptr);
             export_option->set_callback([]() { export_save_flow(); });
+            unlock_option = game_options_menu->add_option(modpacks::unlock_option_title(), nullptr);
+            unlock_option->set_callback([]() {
+                modpacks::toggle_unlock_all();
+                unlock_option->set_title(modpacks::unlock_option_title());
+            });
             game_options_menu->add_setup_controls_option();
             game_options_menu->add_settings_option();
             game_options_menu->add_exit_option();
