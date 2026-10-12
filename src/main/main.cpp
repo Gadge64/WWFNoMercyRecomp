@@ -672,21 +672,18 @@ namespace modpacks {
     }
 
     std::string unlock_option_title() {
-        return std::string("Unlock Everything: ") + (unlock_all::active ? "On" : "Off");
+        return unlock_all::active ? "Everything Unlocked" : "Unlock Everything";
     }
 
-    void toggle_unlock_all() {
+    // One-way: once a profile is unlocked it stays unlocked (the game also writes the unlocks into the save
+    // the next time it saves, so switching it back off would not re-lock anything reliably).
+    void enable_unlock_all() {
         std::error_code ec;
         const std::filesystem::path marker = unlock_marker_path();
-        if (std::filesystem::exists(marker, ec)) {
-            std::filesystem::remove(marker, ec);
-        }
-        else {
-            std::filesystem::create_directories(marker.parent_path(), ec);
-            std::ofstream(marker) << "Unlock Everything is on for this profile (delete this file to turn it off).\n";
-        }
+        std::filesystem::create_directories(marker.parent_path(), ec);
+        std::ofstream(marker) << "Unlock Everything is on for this profile.\n";
         refresh_unlock_all();
-        fprintf(stderr, "[unlock] %s: %s\n", display_name(selected).c_str(), unlock_all::active ? "on" : "off");
+        fprintf(stderr, "[unlock] %s: on\n", display_name(selected).c_str());
     }
 
     // Copies the mod's starting save into saves/<Name>/ the first time the mod is used.
@@ -1225,31 +1222,84 @@ int main(int argc, char** argv) {
                 supported_games[0].display_name,
                 supported_games[0].thumbnail_bytes,
                 recompui::GameOptionsMenuLayout::Center);
-            game_options_menu->add_start_game_or_load_rom_option();
-            // Unlock Everything is per profile, so the Mod option refreshes its title too.
+            // The launcher has three pages, switched by showing/hiding options (the menu itself is a flat list):
+            //   main:   Start Game, Mods, Cheats, Controls, Settings, Exit
+            //   Mods:   Mod: <profile>, Import Save, Export Save, Back
+            //   Cheats: Unlock Everything, Back
+            static std::vector<recompui::GameOption*> main_page, mods_page, cheats_page;
+            static recompui::GameOption* mods_option = nullptr;
             static recompui::GameOption* unlock_option = nullptr;
+            static auto show_page = [](const std::vector<recompui::GameOption*>& page) {
+                for (auto* list : { &main_page, &mods_page, &cheats_page }) {
+                    for (recompui::GameOption* option : *list) {
+                        option->set_display((list == &page) ? recompui::Display::Flex : recompui::Display::None);
+                    }
+                }
+                if (!page.empty()) {
+                    page.front()->focus();
+                }
+            };
+            static auto mods_title = []() { return "Mods (" + modpacks::selected_name() + ")"; };
+
+            main_page.push_back(game_options_menu->add_start_game_or_load_rom_option());
+            mods_option = game_options_menu->add_option(mods_title(), nullptr);
+            mods_option->set_callback([]() { show_page(mods_page); });
+            main_page.push_back(mods_option);
+            recompui::GameOption* cheats_option = game_options_menu->add_option("Cheats", nullptr);
+            cheats_option->set_callback([]() { show_page(cheats_page); });
+            main_page.push_back(cheats_option);
+
+            // Mods page. Unlock Everything is per profile, so changing the mod refreshes its title too.
             if (modpacks::any()) {
                 recompui::GameOption* mod_option = game_options_menu->add_option(modpacks::option_title(), nullptr);
                 mod_option->set_callback([mod_option]() {
                     modpacks::next();
                     mod_option->set_title(modpacks::option_title());
+                    mods_option->set_title(mods_title());
                     if (unlock_option != nullptr) {
                         unlock_option->set_title(modpacks::unlock_option_title());
                     }
                 });
+                mods_page.push_back(mod_option);
             }
             recompui::GameOption* import_option = game_options_menu->add_option("Import Save", nullptr);
             import_option->set_callback([]() { import_save_flow(); });
+            mods_page.push_back(import_option);
             recompui::GameOption* export_option = game_options_menu->add_option("Export Save", nullptr);
             export_option->set_callback([]() { export_save_flow(); });
+            mods_page.push_back(export_option);
+            recompui::GameOption* mods_back = game_options_menu->add_option("Back", nullptr);
+            mods_back->set_callback([]() { show_page(main_page); mods_option->focus(); });
+            mods_page.push_back(mods_back);
+
+            // Cheats page.
             unlock_option = game_options_menu->add_option(modpacks::unlock_option_title(), nullptr);
+            cheats_page.push_back(unlock_option);
+            recompui::GameOption* cheats_back = game_options_menu->add_option("Back", nullptr);
+            cheats_back->set_callback([cheats_option]() { show_page(main_page); cheats_option->focus(); });
+            cheats_page.push_back(cheats_back);
             unlock_option->set_callback([]() {
-                modpacks::toggle_unlock_all();
-                unlock_option->set_title(modpacks::unlock_option_title());
+                const std::string profile = modpacks::selected_name();
+                if (unlock_all::active) {
+                    launcher_messages::post("Unlock Everything", "Everything is already unlocked for " + profile + ".");
+                    return;
+                }
+                recompui::open_choice_prompt("Unlock Everything",
+                    "Unlock every wrestler, costume, move and Smackdown Mall item for " + profile + "? This can't be undone.",
+                    "Unlock", "Cancel",
+                    [profile]() {
+                        modpacks::enable_unlock_all();
+                        unlock_option->set_title(modpacks::unlock_option_title());
+                        launcher_messages::post("Unlock Everything", "Everything is now unlocked for " + profile +
+                            ", every time you play it. To take the unlocks to another emulator with Export Save, "
+                            "let the game save once first (e.g. finish a match), so they're written into the save file.");
+                    },
+                    []() {});
             });
-            game_options_menu->add_setup_controls_option();
-            game_options_menu->add_settings_option();
-            game_options_menu->add_exit_option();
+            main_page.push_back(game_options_menu->add_setup_controls_option());
+            main_page.push_back(game_options_menu->add_settings_option());
+            main_page.push_back(game_options_menu->add_exit_option());
+            show_page(main_page);
         });
         recompui::register_launcher_update_callback([](recompui::LauncherMenu*) { launcher_messages::show_next(); });
     }
