@@ -12,6 +12,7 @@
 #include <set>
 #include <chrono>
 #include <ctime>
+#include <mutex>
 #include <algorithm>
 #include <fstream>
 #include <iterator>
@@ -735,6 +736,106 @@ namespace modpacks {
     }
 }
 
+// Result messages for the launcher's save tools. They are shown from the launcher's per-frame update once
+// no prompt is open: a prompt hides itself after its button handler runs, so a message opened from inside
+// a confirm handler would vanish at once. (open_notification is unsuitable: it is the button-less "please
+// wait" overlay, which the user can't dismiss.)
+namespace launcher_messages {
+    static std::mutex mutex;
+    static std::vector<std::pair<std::string, std::string>> pending;
+
+    static void post(const std::string& header, const std::string& text) {
+        std::lock_guard lock{ mutex };
+        pending.emplace_back(header, text);
+    }
+
+    static void show_next() {
+        std::pair<std::string, std::string> message;
+        {
+            std::lock_guard lock{ mutex };
+            if (pending.empty() || recompui::is_prompt_open()) {
+                return;
+            }
+            message = std::move(pending.front());
+            pending.erase(pending.begin());
+        }
+        recompui::open_info_prompt(message.first, message.second, "OK", []() {}, recompui::ButtonStyle::Primary);
+    }
+}
+
+// Shows a folder in the desktop file manager as a separate, detached process. (SDL_OpenURL did this through
+// the shell from the UI thread and took the game down with it on Windows.) Nothing to open on Android.
+static void open_folder_in_file_manager(const std::filesystem::path& dir) {
+#if defined(_WIN32)
+    std::wstring command = L"explorer.exe \"" + dir.wstring() + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr, nullptr, &startup, &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+#elif defined(__linux__) && !defined(__ANDROID__)
+    const std::string command = "xdg-open '" + path_utf8(dir) + "' >/dev/null 2>&1 &";
+    (void)std::system(command.c_str());
+#else
+    (void)dir;
+#endif
+}
+
+// Launcher "Export Save": writes the selected profile's save for other emulators into <app folder>/exports/:
+//   <profile>.fla  Project64 / Mupen64Plus (Project64 byte order, which Mupen64Plus reads as-is)
+//   <profile>.srm  RetroArch (mupen64plus-next layout: EEPROM, 4 controller paks, SRAM, FlashRAM; the
+//                  FlashRAM in the same order as the .fla; the controller pak goes in slot 1)
+static void export_save_flow() {
+    const std::filesystem::path source = modpacks::selected_save_path();
+    const std::string profile = modpacks::selected_name();
+    std::vector<char> flash;
+    {
+        std::ifstream in(source, std::ios::binary);
+        flash.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (flash.size() != save_import::flash_size) {
+        launcher_messages::post("Export Save", "There's no " + profile + " save to export yet. Play the game once so it creates one.");
+        return;
+    }
+    save_import::reorder(flash, save_import::Order::Swap32);
+
+    std::vector<char> pak;
+    {
+        std::filesystem::path pak_path = source;
+        pak_path.replace_extension(".pak.bin");
+        std::ifstream in(pak_path, std::ios::binary);
+        pak.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+
+    std::vector<char> srm(save_import::srm_size, char(0));
+    std::fill(srm.begin(), srm.begin() + 0x800, char(0xFF));  // EEPROM: unused by No Mercy, erased state
+    if (pak.size() == 0x8000) {
+        std::copy(pak.begin(), pak.end(), srm.begin() + 0x800);
+    }
+    std::copy(flash.begin(), flash.end(), srm.begin() + save_import::srm_flash_offset);
+
+    const std::filesystem::path dir = recompui::file::get_app_folder_path() / "exports";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    bool ok = true;
+    for (const auto& [name, data] : { std::pair{ profile + ".fla", &flash }, std::pair{ profile + ".srm", &srm } }) {
+        std::ofstream out(dir / std::filesystem::path(std::u8string(name.begin(), name.end())), std::ios::binary | std::ios::trunc);
+        out.write(data->data(), std::streamsize(data->size()));
+        out.close();
+        ok = ok && bool(out);
+    }
+    fprintf(stderr, "[export] %s -> %s (%s)\n", profile.c_str(), path_utf8(dir).c_str(), ok ? "ok" : "FAILED");
+    if (!ok) {
+        launcher_messages::post("Export Save", "Couldn't write the exported save files.");
+        return;
+    }
+    launcher_messages::post("Export Save", "Exported the " + profile + " save to the exports folder: " + profile +
+        ".fla for Project64 / Mupen64Plus and " + profile + ".srm for RetroArch.");
+    open_folder_in_file_manager(dir);
+}
+
 // Launcher "Import Save": pick a save from another emulator (Project64/Mupen .fla, RetroArch .srm,
 // or this game's own .bin) and make it the selected profile's save. The current save is kept as
 // wwf.nomercy.us.before-import-<date-time>.bin next to it.
@@ -754,7 +855,7 @@ static void import_save_flow() {
         std::string description, error;
         if (!save_import::normalize(bytes, description, error)) {
             fprintf(stderr, "[import] rejected: %s\n", error.c_str());
-            recompui::open_info_prompt("Import Save", error, "OK", []() {});
+            launcher_messages::post("Import Save", error);
             return;
         }
         fprintf(stderr, "[import] read %zu bytes, detected %s; asking to confirm\n", bytes.size(), description.c_str());
@@ -783,7 +884,7 @@ static void import_save_flow() {
                     backup.replace_filename(std::string("wwf.nomercy.us.before-import-") + stamp + ".bin");
                     std::filesystem::copy_file(target, backup, std::filesystem::copy_options::overwrite_existing, ec);
                     if (ec) {
-                        recompui::open_notification("Import Save", "Couldn't back up the current save, so nothing was changed.");
+                        launcher_messages::post("Import Save", "Couldn't back up the current save, so nothing was changed.");
                         return;
                     }
                 }
@@ -792,11 +893,11 @@ static void import_save_flow() {
                 out.write(bytes.data(), std::streamsize(bytes.size()));
                 out.close();
                 if (!out) {
-                    recompui::open_notification("Import Save", "Couldn't write the save file.");
+                    launcher_messages::post("Import Save", "Couldn't write the save file.");
                     return;
                 }
                 fprintf(stderr, "[import] wrote %s\n", path_utf8(target).c_str());
-                recompui::open_notification("Import Save", "Save imported into " + profile + ". Start the game to use it.");
+                launcher_messages::post("Import Save", "Save imported into " + profile + ". Start the game to use it.");
             },
             []() {});
     });
@@ -1084,10 +1185,13 @@ int main(int argc, char** argv) {
             }
             recompui::GameOption* import_option = game_options_menu->add_option("Import Save", nullptr);
             import_option->set_callback([]() { import_save_flow(); });
+            recompui::GameOption* export_option = game_options_menu->add_option("Export Save", nullptr);
+            export_option->set_callback([]() { export_save_flow(); });
             game_options_menu->add_setup_controls_option();
             game_options_menu->add_settings_option();
             game_options_menu->add_exit_option();
         });
+        recompui::register_launcher_update_callback([](recompui::LauncherMenu*) { launcher_messages::show_next(); });
     }
 
     // Callbacks.
