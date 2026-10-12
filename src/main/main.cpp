@@ -11,6 +11,7 @@
 #include <thread>
 #include <set>
 #include <chrono>
+#include <ctime>
 #include <algorithm>
 #include <fstream>
 #include <iterator>
@@ -542,6 +543,78 @@ static std::string path_utf8(const std::filesystem::path& p) {
     return std::string(u.begin(), u.end());
 }
 
+// Saves from other emulators -> this game's save file (the 128 KB FlashRAM image in N64 byte order).
+// Emulators store FlashRAM in different byte orders (Project64 reverses every 32-bit word, others keep
+// N64 order or swap 16-bit halves). Every No Mercy save holds the text "NO MERCY" several times, so the
+// order is detected by trying each one and keeping whichever reads it most often.
+namespace save_import {
+    constexpr size_t flash_size = 0x20000;
+    // RetroArch (mupen64plus-next / parallel-n64) .srm: EEPROM 0x800, 4 controller paks 0x8000 each,
+    // SRAM 0x8000, then FlashRAM 0x20000.
+    constexpr size_t srm_size = 0x48800;
+    constexpr size_t srm_flash_offset = 0x28800;
+
+    enum class Order { N64, Swap32, Swap16 };
+
+    static void reorder(std::vector<char>& b, Order order) {
+        if (order == Order::Swap32) {
+            for (size_t i = 0; i + 3 < b.size(); i += 4) {
+                std::swap(b[i], b[i + 3]);
+                std::swap(b[i + 1], b[i + 2]);
+            }
+        }
+        else if (order == Order::Swap16) {
+            for (size_t i = 0; i + 1 < b.size(); i += 2) {
+                std::swap(b[i], b[i + 1]);
+            }
+        }
+    }
+
+    static size_t count_title(const std::vector<char>& b) {
+        static const std::string title = "NO MERCY";
+        size_t count = 0;
+        for (auto it = b.begin(); (it = std::search(it, b.end(), title.begin(), title.end())) != b.end(); ++it) {
+            count++;
+        }
+        return count;
+    }
+
+    // Converts a save file's contents in place. Returns false (with a reason) if it isn't a No Mercy save.
+    static bool normalize(std::vector<char>& bytes, std::string& description, std::string& error) {
+        std::string source;
+        if (bytes.size() == srm_size) {
+            bytes = std::vector<char>(bytes.begin() + srm_flash_offset, bytes.begin() + srm_flash_offset + flash_size);
+            source = "RetroArch save, ";
+        }
+        if (bytes.empty() || bytes.size() > flash_size) {
+            error = "That file is the wrong size for a WWF No Mercy save (it should be about 128 KB, usually a .fla file).";
+            return false;
+        }
+        bytes.resize((bytes.size() + 3) & ~size_t(3), char(0xFF));
+
+        Order best = Order::N64;
+        size_t best_count = 0;
+        for (Order order : { Order::N64, Order::Swap32, Order::Swap16 }) {
+            std::vector<char> trial = bytes;
+            reorder(trial, order);
+            const size_t count = count_title(trial);
+            if (count > best_count) {
+                best = order;
+                best_count = count;
+            }
+        }
+        if (best_count == 0) {
+            error = "That file doesn't look like a WWF No Mercy save (no game data found in it).";
+            return false;
+        }
+
+        reorder(bytes, best);
+        bytes.resize(flash_size, char(0xFF));
+        description = source + ((best == Order::N64) ? "N64 byte order" : (best == Order::Swap32) ? "Project64 byte order" : "16-bit swapped byte order");
+        return true;
+    }
+}
+
 namespace modpacks {
     static std::vector<std::u8string> names{ u8"" };  // index 0 = base game
     static size_t selected = 0;
@@ -555,6 +628,16 @@ namespace modpacks {
 
     std::string option_title() { return "Mod: " + display_name(selected); }
     bool any() { return names.size() > 1; }
+    std::string selected_name() { return display_name(selected); }
+
+    // The save file of the selected profile: saves/wwf.nomercy.us.bin, or saves/<Mod>/... for a mod.
+    std::filesystem::path selected_save_path() {
+        std::filesystem::path dir = recompui::file::get_app_folder_path() / "saves";
+        if (selected != 0) {
+            dir /= names[selected];
+        }
+        return dir / (std::u8string(u8"wwf.nomercy.us") + u8".bin");
+    }
 
     // Copies the mod's starting save into saves/<Name>/ the first time the mod is used.
     static void seed_save(const std::filesystem::path& pack_dir, const std::filesystem::path& target) {
@@ -566,26 +649,22 @@ namespace modpacks {
         for (const auto& entry : std::filesystem::directory_iterator(pack_dir / "save", ec)) {
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-            if ((ext != ".bin") && (ext != ".fla")) {
+            if ((ext != ".bin") && (ext != ".fla") && (ext != ".srm")) {
                 continue;
             }
 
             std::ifstream in(entry.path(), std::ios::binary);
             std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            if (ext == ".fla") {
-                // Project64 stores FlashRAM as 32-bit words byte-swapped; it may also be short of 128 KB.
-                bytes.resize((bytes.size() + 3) & ~size_t(3), char(0xFF));
-                for (size_t i = 0; i < bytes.size(); i += 4) {
-                    std::swap(bytes[i], bytes[i + 3]);
-                    std::swap(bytes[i + 1], bytes[i + 2]);
-                }
+            std::string description, error;
+            if (!save_import::normalize(bytes, description, error)) {
+                fprintf(stderr, "[modpack] skipped %s: %s\n", path_utf8(entry.path()).c_str(), error.c_str());
+                continue;
             }
 
-            bytes.resize(0x20000, char(0xFF));
             std::filesystem::create_directories(target.parent_path(), ec);
             std::ofstream out(target, std::ios::binary);
             out.write(bytes.data(), std::streamsize(bytes.size()));
-            fprintf(stderr, "[modpack] seeded %s from %s\n", path_utf8(target).c_str(), path_utf8(entry.path()).c_str());
+            fprintf(stderr, "[modpack] seeded %s from %s (%s)\n", path_utf8(target).c_str(), path_utf8(entry.path()).c_str(), description.c_str());
             return;
         }
     }
@@ -654,6 +733,73 @@ namespace modpacks {
         selected = (it != names.end()) ? size_t(it - names.begin()) : 0;
         apply();
     }
+}
+
+// Launcher "Import Save": pick a save from another emulator (Project64/Mupen .fla, RetroArch .srm,
+// or this game's own .bin) and make it the selected profile's save. The current save is kept as
+// wwf.nomercy.us.before-import-<date-time>.bin next to it.
+static void import_save_flow() {
+    fprintf(stderr, "[import] opening file dialog\n");
+    recompui::file::open_file_dialog([](bool picked, const std::filesystem::path& source) {
+        fprintf(stderr, "[import] dialog returned picked=%d path=%s\n", picked ? 1 : 0, path_utf8(source).c_str());
+        if (!picked) {
+            return;
+        }
+
+        std::vector<char> bytes;
+        {
+            std::ifstream in(source, std::ios::binary);
+            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        std::string description, error;
+        if (!save_import::normalize(bytes, description, error)) {
+            fprintf(stderr, "[import] rejected: %s\n", error.c_str());
+            recompui::open_info_prompt("Import Save", error, "OK", []() {});
+            return;
+        }
+        fprintf(stderr, "[import] read %zu bytes, detected %s; asking to confirm\n", bytes.size(), description.c_str());
+
+        const std::filesystem::path target = modpacks::selected_save_path();
+        const std::string profile = modpacks::selected_name();
+        recompui::open_choice_prompt("Import Save",
+            "Replace the " + profile + " save with " + path_utf8(source.filename()) + " (" + description + ")? "
+            "Your current save is kept as a backup in the saves folder.",
+            "Import", "Cancel",
+            [bytes, target, profile]() {
+                fprintf(stderr, "[import] confirmed\n");
+                std::error_code ec;
+                std::filesystem::create_directories(target.parent_path(), ec);
+                if (std::filesystem::exists(target, ec)) {
+                    char stamp[32] = {};
+                    const std::time_t now = std::time(nullptr);
+                    std::tm local{};
+#if defined(_WIN32)
+                    localtime_s(&local, &now);
+#else
+                    localtime_r(&now, &local);
+#endif
+                    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+                    std::filesystem::path backup = target;
+                    backup.replace_filename(std::string("wwf.nomercy.us.before-import-") + stamp + ".bin");
+                    std::filesystem::copy_file(target, backup, std::filesystem::copy_options::overwrite_existing, ec);
+                    if (ec) {
+                        recompui::open_notification("Import Save", "Couldn't back up the current save, so nothing was changed.");
+                        return;
+                    }
+                }
+
+                std::ofstream out(target, std::ios::binary | std::ios::trunc);
+                out.write(bytes.data(), std::streamsize(bytes.size()));
+                out.close();
+                if (!out) {
+                    recompui::open_notification("Import Save", "Couldn't write the save file.");
+                    return;
+                }
+                fprintf(stderr, "[import] wrote %s\n", path_utf8(target).c_str());
+                recompui::open_notification("Import Save", "Save imported into " + profile + ". Start the game to use it.");
+            },
+            []() {});
+    });
 }
 
 int main(int argc, char** argv) {
@@ -936,6 +1082,8 @@ int main(int argc, char** argv) {
                     mod_option->set_title(modpacks::option_title());
                 });
             }
+            recompui::GameOption* import_option = game_options_menu->add_option("Import Save", nullptr);
+            import_option->set_callback([]() { import_save_flow(); });
             game_options_menu->add_setup_controls_option();
             game_options_menu->add_settings_option();
             game_options_menu->add_exit_option();
