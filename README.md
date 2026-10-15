@@ -21,13 +21,13 @@
 ## Mods and texture packs
 
 Each mod is a folder inside `modpacks`, next to the executable (or in `%LOCALAPPDATA%\NoMercyRecompiled\` when not
-running portable). The launcher's **Mod** option lists every mod folder plus **Base Game**, and remembers your choice.
+running portable). The launcher's **Mods** page lists every mod folder plus **Base Game**, and remembers your choice.
 
 ```
 modpacks\
     <Mod Name>\
         textures\   PNG texture replacements, any subfolders
-        save\       optional starting save: a Project64 .fla, or a .bin from this game
+        save\       optional starting save: a Project64 .fla, a RetroArch .srm, or a .bin from this game
 ```
 
 **Adding textures** needs no tools or code:
@@ -47,6 +47,20 @@ the mod again. Base Game keeps its own save and is never changed by mods.
 
 Textures for created or edited wrestlers only show when those wrestlers are in the roster, which comes from the mod's
 save.
+
+## Save tools and cheats
+
+These are on the launcher's **Mods** page. They act on the mod (or Base Game) currently selected there, so **select the
+mod first**.
+
+- **Import Save** brings in a save from another emulator: a Project64 or Mupen `.fla`, a RetroArch `.srm`, or a `.bin`
+  from this game. The byte order is detected automatically. The current save is backed up first, next to it, as
+  `wwf.nomercy.us.before-import-<time>.bin` (in `saves\` for Base Game, `saves\<Mod Name>\` for a mod).
+- **Export Save** writes the selected save to `exports\<Name>.fla` (Project64 / Mupen) and `exports\<Name>.srm`
+  (RetroArch).
+- **Cheats > Unlock Everything** unlocks every wrestler, costume, move and SmackDown Mall item for the selected save.
+  The game writes the unlocks into the save the next time it saves, so it can't be switched off; keep a copy of the
+  save (Export Save) if you may want the locked version back.
 
 Thanks to **3jabo** ([Reddit](https://www.reddit.com/user/3jabo/), [GitHub](https://github.com/3jabo), [YouTube](https://www.youtube.com/@3jabo)) for testing mod support and his excellent input.
 
