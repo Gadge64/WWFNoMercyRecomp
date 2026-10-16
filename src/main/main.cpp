@@ -182,7 +182,7 @@ static void wcw_sample_all_threads() {
 
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
-static const recomp::Version version { 0, 2, 1, "" };
+static const recomp::Version version { 0, 2, 2, "" };
 
 template <typename... Ts>
 [[noreturn]] static void exit_error(const char* str, Ts... args) {
@@ -258,8 +258,11 @@ static void update_virtual_pads() {
 // Unlock Everything: the game's unlock bitfield (every wrestler, costume, move and Smackdown Mall item) is
 // 22 bytes at 0x800BD910 in USA Rev 1. Found by diffing RAM with a fully unlocked save against a fresh one
 // (the V1.0 GameShark code writes the same 22 bytes at 0x800BEE40) and verified in game. While the selected
-// profile has it switched on, the bytes are held at 0xFF every frame, like the cheat, so whenever the game
-// saves it writes them into the save itself, with its own checksums. WCW_UNLOCK_ALL=1 forces it on.
+// profile has it switched on, the bytes are held at 0xFF every frame, like the cheat. WCW_UNLOCK_ALL=1 forces it on.
+// The game only copies that bitfield into its save image (ovl_a func_800E2C44: image + 0x6B67, 25 bytes) when it
+// unlocks something itself, which can't happen once everything is unlocked. So the bytes are held in the save
+// image too (its pointer is at 0x800457B0, set by ovl_a func_800E49FC); the game's next save of any kind then
+// writes the changed record, and at boot it copies the image back to 0x800BD910 (func_800E2C7C).
 namespace unlock_all {
     static std::atomic<bool> active{ false };
 
@@ -270,6 +273,14 @@ namespace unlock_all {
         }
         for (uint32_t addr = 0x0BD910; addr < 0x0BD910 + 22; addr++) {
             rdram[addr ^ 3] = 0xFF;  // RDRAM is stored as little-endian 32-bit words
+        }
+        const uint32_t image = *reinterpret_cast<const uint32_t*>(rdram + 0x0457B0);
+        constexpr uint32_t image_size = 0x7170;  // func_80004C28(image, 0x7170)
+        if ((image >= 0x80000000u) && (image + image_size <= 0x80800000u)) {
+            const uint32_t base = (image & 0x7FFFFF) + 0x6B67;
+            for (uint32_t addr = base; addr < base + 22; addr++) {
+                rdram[addr ^ 3] = 0xFF;
+            }
         }
     }
 }

@@ -57,10 +57,12 @@ mod first**.
   from this game. The byte order is detected automatically. The current save is backed up first, next to it, as
   `wwf.nomercy.us.before-import-<time>.bin` (in `saves\` for Base Game, `saves\<Mod Name>\` for a mod).
 - **Export Save** writes the selected save to `exports\<Name>.fla` (Project64 / Mupen) and `exports\<Name>.srm`
-  (RetroArch).
+  (RetroArch). For RetroArch with the Mupen64Plus-Next core, rename the `.srm` to match your ROM's file name (for
+  example `WWF No Mercy (USA) (Rev 1).srm`) and put it in `RetroArch\saves\Mupen64Plus-Next\`, since RetroArch keeps
+  saves in a folder per core by default. Close RetroArch before copying it in, or it overwrites the file on exit.
 - **Cheats > Unlock Everything** unlocks every wrestler, costume, move and SmackDown Mall item for the selected save.
-  The game writes the unlocks into the save the next time it saves, so it can't be switched off; keep a copy of the
-  save (Export Save) if you may want the locked version back.
+  The game writes the unlocks into the save the next time it saves (changing any setting in Options does it), so
+  it can't be switched off; keep a copy of the save (Export Save) if you may want the locked version back.
 
 Thanks to **3jabo** ([Reddit](https://www.reddit.com/user/3jabo/), [GitHub](https://github.com/3jabo), [YouTube](https://www.youtube.com/@3jabo)) for testing mod support and his excellent input.
 
